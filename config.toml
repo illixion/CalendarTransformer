@@ -4,6 +4,7 @@ dest_calendar = "Test Push"
 max_age_days = 30  # Only process events from the last 30 days
 
 [fastmail]
+url = "https://caldav.fastmail.com/dav/"
 username = "me@fastmail.com"
 password = "SecurePassword"
 

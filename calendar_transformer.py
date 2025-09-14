@@ -15,12 +15,14 @@ import toml
 import caldav
 from caldav.elements import dav, cdav
 import datetime
-import re
 import vobject
+import logging
+import uuid
+
 
 CONFIG_PATH = "config.toml"
-CALDAV_URL = "https://caldav.fastmail.com/dav/"
 
+logging.basicConfig(level=logging.DEBUG)
 
 class EventTransformer:
     def should_delete_event(self, event):
@@ -84,8 +86,8 @@ class EventTransformer:
         return event
 
     def event_uid(self, event):
-        # Use UID if present, else fallback to summary+start
-        return event.get("uid") or f"{event['summary']}_{event['dtstart']}"
+        # Use summary+dtstart for duplicate detection, since UID is random
+        return f"{event['summary']}_{event['dtstart']}"
 
     def run(self, client):
         # Load all calendars
@@ -185,33 +187,57 @@ class EventTransformer:
                         e.copy(), filter_obj.get("transformations", {})
                     )
                 )
-        # Prevent duplicates in dest_calendar
+        # Prevent duplicates in dest_calendar using summary+dtstart
         dest_events = dest_cal.events()
-        dest_uids = set()
+        dest_keys = set()
         for e in dest_events:
             vevent = e.vobject_instance.vevent
-            uid = getattr(vevent, "uid", None) and vevent.uid.value
             summary = vevent.summary.value
             dtstart = vevent.dtstart.value
-            key = uid or f"{summary}_{dtstart}"
-            dest_uids.add(key)
+            key = f"{summary}_{dtstart}"
+            dest_keys.add(key)
         # Save transformed events
         for e in transformed:
             key = self.event_uid(e)
-            if key in dest_uids:
+            if key in dest_keys:
                 continue  # Skip duplicate
             # Create iCalendar data
             ical = self.event_to_ical(e)
-            dest_cal.add_event(ical)
+            dest_cal.save_event(ical, no_overwrite=True)
 
     def event_to_ical(self, event):
-        # Minimal iCalendar event
         dtstart = event["dtstart"]
-        dtend = dtstart + datetime.timedelta(hours=1)
-        uid = event.get("uid") or f"{event['summary']}_{dtstart}".replace(" ", "_")
+        dtstamp = datetime.datetime.now(datetime.timezone.utc)
+        uid = str(uuid.uuid4())  # Always generate a new UUIDv4
         location = event.get("location", "")
         rsvp = event.get("rsvp", "")
-        ical = f"""BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:{uid}\nSUMMARY:{event['summary']}\nDTSTART:{dtstart.strftime('%Y%m%dT%H%M%S')}\nDTEND:{dtend.strftime('%Y%m%dT%H%M%S')}\nLOCATION:{location}\n"""
+        original_uid = event.get("uid", "")
+        summary = event.get("summary", "")
+        # Detect all-day event (date only, no time)
+        if isinstance(dtstart, datetime.date) and not isinstance(dtstart, datetime.datetime):
+            dtstart_str = dtstart.strftime('%Y%m%d')
+            dtend = dtstart + datetime.timedelta(days=1)
+            dtend_str = dtend.strftime('%Y%m%d')
+            ical = (
+                "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\n"
+                f"UID:{uid}\nDTSTAMP:{dtstamp.strftime('%Y%m%dT%H%M%S')}Z\nSEQUENCE:0\n"
+                f"SUMMARY:{summary}\nDTSTART;VALUE=DATE:{dtstart_str}\nDTEND;VALUE=DATE:{dtend_str}\n"
+                f"LOCATION:{location}\n"
+            )
+        else:
+            if dtstart.tzinfo is None:
+                dtstart = dtstart.replace(tzinfo=datetime.timezone.utc)
+            dtend = dtstart + datetime.timedelta(hours=1)
+            dtstart_str = dtstart.strftime('%Y%m%dT%H%M%S') + 'Z'
+            dtend_str = dtend.strftime('%Y%m%dT%H%M%S') + 'Z'
+            ical = (
+                "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\n"
+                f"UID:{uid}\nDTSTAMP:{dtstamp.strftime('%Y%m%dT%H%M%S')}Z\nSEQUENCE:0\n"
+                f"SUMMARY:{summary}\nDTSTART:{dtstart_str}\nDTEND:{dtend_str}\n"
+                f"LOCATION:{location}\n"
+            )
+        if original_uid:
+            ical += f"X-ORIGINAL-UID:{original_uid}\n"
         if rsvp:
             ical += f"RSVP:{rsvp}\n"
         ical += "END:VEVENT\nEND:VCALENDAR"
@@ -222,7 +248,8 @@ def main():
     config = toml.load(CONFIG_PATH)
     username = config["fastmail"]["username"]
     password = config["fastmail"]["password"]
-    client = caldav.DAVClient(url=CALDAV_URL, username=username, password=password)
+    url = config["fastmail"]["url"]
+    client = caldav.DAVClient(url=url, username=username, password=password)
     transformer = EventTransformer(config)
     transformer.run(client)
 
