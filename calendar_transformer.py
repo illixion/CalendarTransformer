@@ -22,7 +22,7 @@ import uuid
 
 CONFIG_PATH = "config.toml"
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 class EventTransformer:
     def should_delete_event(self, event):
@@ -86,8 +86,8 @@ class EventTransformer:
         return event
 
     def event_uid(self, event):
-        # Use summary+dtstart for duplicate detection, since UID is random
-        return f"{event['summary']}_{event['dtstart']}"
+        # Use original_uid for duplicate detection
+        return event.get('original_uid') or event.get('uid')
 
     def run(self, client):
         # Load all calendars
@@ -124,6 +124,7 @@ class EventTransformer:
                     "uid": getattr(vevent, "uid", None) and vevent.uid.value,
                     "summary": vevent.summary.value,
                     "dtstart": vevent.dtstart.value,
+                    "dtend": getattr(vevent, "dtend", None) and vevent.dtend.value,
                     "location": getattr(vevent, "location", None) and vevent.location.value,
                     "rsvp": (
                         getattr(vevent, "partstat", None) and vevent.partstat.value
@@ -182,19 +183,25 @@ class EventTransformer:
                 # Don't add events that should be deleted
                 if self.should_delete_event(e):
                     continue
+                # Always preserve original UID for dupe detection and ICS export
+                e_copy = e.copy()
+                e_copy['original_uid'] = e.get('uid')
                 transformed.append(
                     self.transform_event(
-                        e.copy(), filter_obj.get("transformations", {})
+                        e_copy, filter_obj.get("transformations", {})
                     )
                 )
-        # Prevent duplicates in dest_calendar using summary+dtstart
+        # Prevent duplicates in dest_calendar using original_uid
         dest_events = dest_cal.events()
         dest_keys = set()
         for e in dest_events:
             vevent = e.vobject_instance.vevent
-            summary = vevent.summary.value
-            dtstart = vevent.dtstart.value
-            key = f"{summary}_{dtstart}"
+            # Try to get X-ORIGINAL-UID if present, else fallback to UID
+            original_uid = getattr(vevent, "x_original_uid", None)
+            if original_uid:
+                key = original_uid.value
+            else:
+                key = vevent.uid.value
             dest_keys.add(key)
         # Save transformed events
         for e in transformed:
@@ -202,6 +209,7 @@ class EventTransformer:
             if key in dest_keys:
                 continue  # Skip duplicate
             # Create iCalendar data
+            logging.info(f"Adding event: {e['summary']} on {e['dtstart']} to {self.dest_calendar}")
             ical = self.event_to_ical(e)
             dest_cal.save_event(ical, no_overwrite=True)
 
@@ -211,13 +219,18 @@ class EventTransformer:
         uid = str(uuid.uuid4())  # Always generate a new UUIDv4
         location = event.get("location", "")
         rsvp = event.get("rsvp", "")
-        original_uid = event.get("uid", "")
+        original_uid = event.get("original_uid", "")
         summary = event.get("summary", "")
-        # Detect all-day event (date only, no time)
-        if isinstance(dtstart, datetime.date) and not isinstance(dtstart, datetime.datetime):
-            dtstart_str = dtstart.strftime('%Y%m%d')
-            dtend = dtstart + datetime.timedelta(days=1)
-            dtend_str = dtend.strftime('%Y%m%d')
+        # All-day event detection
+        is_all_day = False
+        dtend = event.get("dtend")
+        if isinstance(dtstart, datetime.date) and not isinstance(dtend, datetime.datetime):
+            is_all_day = True
+        if is_all_day:
+            dtstart_date = dtstart.date() if isinstance(dtstart, datetime.datetime) else dtstart
+            dtstart_str = dtstart_date.strftime('%Y%m%d')
+            dtend_date = dtstart_date + datetime.timedelta(days=1)
+            dtend_str = dtend_date.strftime('%Y%m%d')
             ical = (
                 "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\n"
                 f"UID:{uid}\nDTSTAMP:{dtstamp.strftime('%Y%m%dT%H%M%S')}Z\nSEQUENCE:0\n"
@@ -225,17 +238,34 @@ class EventTransformer:
                 f"LOCATION:{location}\n"
             )
         else:
-            if dtstart.tzinfo is None:
-                dtstart = dtstart.replace(tzinfo=datetime.timezone.utc)
-            dtend = dtstart + datetime.timedelta(hours=1)
-            dtstart_str = dtstart.strftime('%Y%m%dT%H%M%S') + 'Z'
-            dtend_str = dtend.strftime('%Y%m%dT%H%M%S') + 'Z'
-            ical = (
-                "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\n"
-                f"UID:{uid}\nDTSTAMP:{dtstamp.strftime('%Y%m%dT%H%M%S')}Z\nSEQUENCE:0\n"
-                f"SUMMARY:{summary}\nDTSTART:{dtstart_str}\nDTEND:{dtend_str}\n"
-                f"LOCATION:{location}\n"
-            )
+            # Timed event
+            tzinfo = dtstart.tzinfo
+            dtend = event.get("dtend")
+            if dtend is None:
+                dtend = dtstart + datetime.timedelta(hours=1)
+            if tzinfo is not None and tzinfo != datetime.timezone.utc:
+                dtstart_str = dtstart.strftime('%Y%m%dT%H%M%S')
+                dtend_str = dtend.strftime('%Y%m%dT%H%M%S')
+                tzid = tzinfo.tzname(dtstart) if hasattr(tzinfo, 'tzname') else None
+                ical = (
+                    "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\n"
+                    f"UID:{uid}\nDTSTAMP:{dtstamp.strftime('%Y%m%dT%H%M%S')}Z\nSEQUENCE:0\n"
+                    f"SUMMARY:{summary}\nDTSTART;TZID={tzid}:{dtstart_str}\nDTEND;TZID={tzid}:{dtend_str}\n"
+                    f"LOCATION:{location}\n"
+                )
+            else:
+                # UTC fallback
+                if tzinfo is None:
+                    dtstart = dtstart.replace(tzinfo=datetime.timezone.utc)
+                    dtend = dtend.replace(tzinfo=datetime.timezone.utc)
+                dtstart_str = dtstart.strftime('%Y%m%dT%H%M%S') + 'Z'
+                dtend_str = dtend.strftime('%Y%m%dT%H%M%S') + 'Z'
+                ical = (
+                    "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\n"
+                    f"UID:{uid}\nDTSTAMP:{dtstamp.strftime('%Y%m%dT%H%M%S')}Z\nSEQUENCE:0\n"
+                    f"SUMMARY:{summary}\nDTSTART:{dtstart_str}\nDTEND:{dtend_str}\n"
+                    f"LOCATION:{location}\n"
+                )
         if original_uid:
             ical += f"X-ORIGINAL-UID:{original_uid}\n"
         if rsvp:
