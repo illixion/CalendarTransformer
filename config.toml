@@ -1,0 +1,36 @@
+# CalendarManager TOML config for advanced transformation and filtering
+
+dest_calendar = "Test Push"
+max_age_days = 30  # Only process events from the last 30 days
+
+[fastmail]
+username = "me@fastmail.com"
+password = "SecurePassword"
+
+# Personal, Work, Friends: strip name/location, set name to Busy
+[[filter_sets]]
+filters = { calendar_name = "Personal" }
+transformations = { set_event_name = "Busy", strip_location = true }
+
+[[filter_sets]]
+filters = { calendar_name = "Work" }
+transformations = { set_event_name = "Busy", strip_location = true }
+
+[[filter_sets]]
+filters = { calendar_name = "Friends" }
+transformations = { set_event_name = "Busy", strip_location = true }
+
+# Events: copy, but exclude by name/location substring
+[[filter_sets]]
+filters = { calendar_name = "Events", event_name_not_contains = ["Private", "Secret"], location_not_contains = ["Hidden"] }
+transformations = {}
+
+# Photography: name to Busy, strip address
+[[filter_sets]]
+filters = { calendar_name = "Photography" }
+transformations = { set_event_name = "Busy", strip_location = true }
+
+# Company Name: name to Busy (Work), strip location
+[[filter_sets]]
+filters = { calendar_name = "Company Name" }
+transformations = { set_event_name = "Busy (Work)", strip_location = true }
