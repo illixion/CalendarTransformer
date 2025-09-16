@@ -84,7 +84,7 @@ class EventTransformer:
         # Conditional stripping for event name
         strip_name = t.get("strip_name", False)
         do_strip_name = strip_name
-        if strip_name:
+        if strip_name or t.get("strip_if_event_name_contains") or t.get("strip_if_event_name_not_contains"):
             # If substring found in event name, strip
             if match_substring(event.get("summary", ""), t.get("strip_if_event_name_contains", []), False):
                 do_strip_name = True
@@ -97,7 +97,7 @@ class EventTransformer:
         # Conditional stripping for location
         strip_location = t.get("strip_location", False)
         do_strip_location = strip_location
-        if strip_location:
+        if strip_location or t.get("strip_if_location_contains") or t.get("strip_if_location_not_contains"):
             # If substring found in location, strip
             if match_substring(event.get("location", ""), t.get("strip_if_location_contains", []), False):
                 do_strip_location = True
@@ -260,7 +260,7 @@ class EventTransformer:
                 key = vevent.uid.value
             dest_keys.add(key)
         # Print count of events we're about to add
-        logging.info(f"Prepared to add {len(transformed)} transformed events to destination calendar '{self.dest_calendar}'.")
+        logging.info(f"Found {len(transformed)} eligible events, will add to '{self.dest_calendar}'.")
         # Save transformed events
         for e in transformed:
             key = self.event_uid(e)
