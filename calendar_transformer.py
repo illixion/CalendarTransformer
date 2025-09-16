@@ -2,6 +2,7 @@ import toml
 import caldav
 from caldav.elements import dav, cdav
 import datetime
+from dateutil.tz import gettz
 import vobject
 import logging
 import uuid
@@ -64,8 +65,12 @@ class EventTransformer:
         def match_substring(val, substrings, negate=False):
             if not substrings:
                 return False
+            # Normalize the input string by removing all newlines
+            normalized_val = val.replace('\n', ' ').strip()
             for s in substrings:
-                if (s in val) != negate:
+                # Normalize the config string as well, in case it has unintended newlines
+                normalized_s = s.replace('\n', ' ').strip()
+                if (normalized_s in normalized_val) != negate:
                     return True
             return False
 
@@ -81,10 +86,10 @@ class EventTransformer:
         do_strip_name = strip_name
         if strip_name:
             # If substring found in event name, strip
-            if match_substring(event["summary"], t.get("strip_if_event_name_contains", []), False):
+            if match_substring(event.get("summary", ""), t.get("strip_if_event_name_contains", []), False):
                 do_strip_name = True
             # If substring found in event name _not_, skip stripping
-            if match_substring(event["summary"], t.get("strip_if_event_name_not_contains", []), False):
+            if match_substring(event.get("summary", ""), t.get("strip_if_event_name_not_contains", []), True):
                 do_strip_name = False
         if do_strip_name:
             event["summary"] = ""
@@ -107,6 +112,16 @@ class EventTransformer:
         # Use original_uid for duplicate detection
         return event.get('original_uid') or event.get('uid')
 
+    def sanitize_text(self, text):
+        if not text:
+            return ""
+        # Escape backslashes, semicolons, and commas
+        text = text.replace('\\', '\\\\').replace(';', '\\;').replace(',', '\\,')
+        # Replace newlines with escaped n
+        text = text.replace('\n', '\\n')
+        # You may need to fold long lines if they exceed 75 characters, but for newlines, the above is the key fix
+        return text
+
     def run(self, client):
         # Load all calendars
         calendars = client.principal().calendars()
@@ -114,56 +129,90 @@ class EventTransformer:
         dest_cal = cal_map.get(self.dest_calendar)
         if not dest_cal:
             raise Exception(f"Destination calendar '{self.dest_calendar}' not found.")
-        # Only load events from source calendars defined in config
-        source_calendar_names = set(fs["filters"].get("calendar_name") for fs in self.filter_sets if fs["filters"].get("calendar_name") and fs["filters"].get("calendar_name") != self.dest_calendar)
-        all_events = []
         now = datetime.datetime.now(datetime.timezone.utc)
-        for cal_name in source_calendar_names:
-            cal = cal_map.get(cal_name)
-            if not cal:
-                print(f"Warning: Source calendar '{cal_name}' not found.")
-                continue
-            events = cal.events()
-            for e in events:
-                vevent = None
-                if hasattr(e, 'vobject_instance') and e.vobject_instance:
-                    vevent = e.vobject_instance.vevent
-                else:
-                    # Fallback: parse from raw ICS data
-                    try:
-                        vcal = vobject.readOne(e.data)
-                        vevent = vcal.vevent
-                    except Exception as ex:
-                        print(f"Failed to parse event data: {ex}")
-                        continue  # skip this event if parsing fails
 
-                event = {
-                    "calendar": cal.name,
-                    "uid": getattr(vevent, "uid", None) and vevent.uid.value,
-                    "summary": vevent.summary.value,
-                    "dtstart": vevent.dtstart.value,
-                    "dtend": getattr(vevent, "dtend", None) and vevent.dtend.value,
-                    "location": getattr(vevent, "location", None) and vevent.location.value,
-                    "rsvp": (
-                        getattr(vevent, "partstat", None) and vevent.partstat.value
-                        if hasattr(vevent, "partstat")
-                        else ""
-                    ),
-                }
-                # Fix: ensure both datetimes are offset-aware for subtraction
-                dtstart = event["dtstart"]
-                if self.max_age_days is not None:
-                    # If dtstart is a date, convert to datetime
-                    if isinstance(dtstart, datetime.date) and not isinstance(dtstart, datetime.datetime):
-                        dtstart = datetime.datetime.combine(dtstart, datetime.time.min, tzinfo=datetime.timezone.utc)
-                    # If dtstart is naive, make it UTC
-                    elif isinstance(dtstart, datetime.datetime) and dtstart.tzinfo is None:
-                        dtstart = dtstart.replace(tzinfo=datetime.timezone.utc)
-                    age = (now - dtstart).days
-                    if age > self.max_age_days:
-                        continue
-                    event["dtstart"] = dtstart
-                all_events.append(event)
+        # For each filter set, process only events from its source calendar
+        transformed = []
+        source_events_by_cal = {}
+        for filter_obj in self.filter_sets:
+            cal_name = filter_obj["filters"].get("calendar_name")
+            if not cal_name or cal_name == self.dest_calendar:
+                continue
+            if cal_name not in source_events_by_cal:
+                cal = cal_map.get(cal_name)
+                if not cal:
+                    print(f"Warning: Source calendar '{cal_name}' not found.")
+                    source_events_by_cal[cal_name] = []
+                    continue
+                events = cal.events()
+                event_list = []
+                for e in events:
+                    vevent = None
+                    if hasattr(e, 'vobject_instance') and e.vobject_instance:
+                        vevent = e.vobject_instance.vevent
+                    else:
+                        try:
+                            vcal = vobject.readOne(e.data)
+                            vevent = vcal.vevent
+                        except Exception as ex:
+                            print(f"Failed to parse event data: {ex}")
+                            continue
+                    event = {
+                        "calendar": cal.name,
+                        "uid": getattr(vevent, "uid", None) and vevent.uid.value,
+                        "summary": vevent.summary.value,
+                        "dtstart": vevent.dtstart.value,
+                        "dtend": getattr(vevent, "dtend", None) and vevent.dtend.value,
+                        "location": getattr(vevent, "location", None) and vevent.location.value,
+                        "rsvp": (
+                            getattr(vevent, "partstat", None) and vevent.partstat.value
+                            if hasattr(vevent, "partstat")
+                            else ""
+                        ),
+                    }
+                    
+                    # Use a default timezone if the event is naive
+                    local_tz = datetime.datetime.now().astimezone().tzinfo
+                    
+                    if isinstance(event['dtstart'], datetime.datetime) and event['dtstart'].tzinfo is None:
+                        # Assume naive events are in the local system timezone
+                        event['dtstart'] = event['dtstart'].replace(tzinfo=local_tz)
+                        if event['dtend'] and isinstance(event['dtend'], datetime.datetime) and event['dtend'].tzinfo is None:
+                            event['dtend'] = event['dtend'].replace(tzinfo=local_tz)
+
+                    # Now, convert all timezone-aware timed events to UTC for internal consistency
+                    if isinstance(event['dtstart'], datetime.datetime):
+                        event['dtstart'] = event['dtstart'].astimezone(datetime.timezone.utc)
+                        if event['dtend'] and isinstance(event['dtend'], datetime.datetime):
+                            event['dtend'] = event['dtend'].astimezone(datetime.timezone.utc)
+                    
+                    # Fix: ensure both datetimes are offset-aware for subtraction
+                    dtstart = event["dtstart"]
+
+                    if self.max_age_days is not None and self.max_age_days > 0:
+                        if isinstance(dtstart, datetime.date) and not isinstance(dtstart, datetime.datetime):
+                            dtstart = datetime.datetime.combine(dtstart, datetime.time.min, tzinfo=datetime.timezone.utc)
+                        elif isinstance(dtstart, datetime.datetime) and dtstart.tzinfo is None:
+                            dtstart = dtstart.replace(tzinfo=datetime.timezone.utc)
+                        age = (now - dtstart).days
+                        if age > self.max_age_days:
+                            continue
+                        event["dtstart"] = dtstart
+                    event_list.append(event)
+                source_events_by_cal[cal_name] = event_list
+            # Only process events from this filter's calendar
+            filtered = [e for e in source_events_by_cal[cal_name] if self.match_event(e, filter_obj)]
+            for e in filtered:
+                if self.should_delete_event(e):
+                    continue
+                e_copy = e.copy()
+                e_copy['original_uid'] = e.get('uid')
+                transformed.append(
+                    self.transform_event(
+                        e_copy, filter_obj.get("transformations", {})
+                    )
+                )
+
         # Deletion phase: remove declined/❌ events from dest
         dest_events = dest_cal.events()
         for e in dest_events:
@@ -171,17 +220,11 @@ class EventTransformer:
             uid = getattr(vevent, "uid", None) and vevent.uid.value
             summary = vevent.summary.value
             dtstart = vevent.dtstart.value
-            location = getattr(vevent, "location", None) and vevent.location.value
-            rsvp = (
-                getattr(vevent, "partstat", None) and vevent.partstat.value
-                if hasattr(vevent, "partstat")
-                else ""
-            )
             # Find matching source event
             src_event = next(
                 (
                     ev
-                    for ev in all_events
+                    for ev in transformed
                     if (
                         ev.get("uid") == uid
                         or (ev["summary"] == summary and ev["dtstart"] == dtstart)
@@ -193,103 +236,76 @@ class EventTransformer:
                 e.delete()
             elif summary.startswith("❌"):
                 e.delete()
-        # For each filter set, filter and transform
-        transformed = []
-        for filter_obj in self.filter_sets:
-            filtered = [e for e in all_events if self.match_event(e, filter_obj)]
-            for e in filtered:
-                # Don't add events that should be deleted
-                if self.should_delete_event(e):
-                    continue
-                # Always preserve original UID for dupe detection and ICS export
-                e_copy = e.copy()
-                e_copy['original_uid'] = e.get('uid')
-                transformed.append(
-                    self.transform_event(
-                        e_copy, filter_obj.get("transformations", {})
-                    )
-                )
+
         # Prevent duplicates in dest_calendar using original_uid
         dest_events = dest_cal.events()
         dest_keys = set()
         for e in dest_events:
             vevent = e.vobject_instance.vevent
-            # Try to get X-ORIGINAL-UID if present, else fallback to UID
             original_uid = getattr(vevent, "x_original_uid", None)
             if original_uid:
                 key = original_uid.value
             else:
                 key = vevent.uid.value
             dest_keys.add(key)
+        # Print count of events we're about to add
+        logging.info(f"Prepared to add {len(transformed)} transformed events to destination calendar '{self.dest_calendar}'.")
         # Save transformed events
         for e in transformed:
             key = self.event_uid(e)
             if key in dest_keys:
                 continue  # Skip duplicate
-            # Create iCalendar data
             logging.info(f"Adding event: {e['summary']} on {e['dtstart']} to {self.dest_calendar}")
             ical = self.event_to_ical(e)
             dest_cal.save_event(ical, no_overwrite=True)
 
     def event_to_ical(self, event):
         dtstart = event["dtstart"]
-        dtstamp = datetime.datetime.now(datetime.timezone.utc)
-        uid = str(uuid.uuid4())  # Always generate a new UUIDv4
-        location = event.get("location", "")
-        rsvp = event.get("rsvp", "")
-        original_uid = event.get("original_uid", "")
-        summary = event.get("summary", "")
-        # All-day event detection
-        is_all_day = False
         dtend = event.get("dtend")
-        if isinstance(dtstart, datetime.date) and not isinstance(dtend, datetime.datetime):
-            is_all_day = True
+
+        ical_parts = [
+            "BEGIN:VCALENDAR\nVERSION:2.0\n",
+            "BEGIN:VEVENT\n",
+            f"UID:{str(uuid.uuid4())}\n",
+            f"DTSTAMP:{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S')}Z\n",
+            f"SUMMARY:{event.get('summary', '')}\n",
+        ]
+
+        # All-day event detection
+        is_all_day = isinstance(dtstart, datetime.date) and not isinstance(dtstart, datetime.datetime)
+        
         if is_all_day:
             dtstart_date = dtstart.date() if isinstance(dtstart, datetime.datetime) else dtstart
-            dtstart_str = dtstart_date.strftime('%Y%m%d')
-            dtend_date = dtstart_date + datetime.timedelta(days=1)
-            dtend_str = dtend_date.strftime('%Y%m%d')
-            ical = (
-                "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\n"
-                f"UID:{uid}\nDTSTAMP:{dtstamp.strftime('%Y%m%dT%H%M%S')}Z\nSEQUENCE:0\n"
-                f"SUMMARY:{summary}\nDTSTART;VALUE=DATE:{dtstart_str}\nDTEND;VALUE=DATE:{dtend_str}\n"
-                f"LOCATION:{location}\n"
-            )
+            if dtend:
+                dtend_date = dtend.date() if isinstance(dtend, datetime.datetime) else dtend
+            else:
+                dtend_date = dtstart_date + datetime.timedelta(days=1)
+            
+            ical_parts.append(f"DTSTART;VALUE=DATE:{dtstart_date.strftime('%Y%m%d')}\n")
+            ical_parts.append(f"DTEND;VALUE=DATE:{dtend_date.strftime('%Y%m%d')}\n")
         else:
-            # Timed event
-            tzinfo = dtstart.tzinfo
-            dtend = event.get("dtend")
+            # Timed events (UTC)
             if dtend is None:
                 dtend = dtstart + datetime.timedelta(hours=1)
-            if tzinfo is not None and tzinfo != datetime.timezone.utc:
-                dtstart_str = dtstart.strftime('%Y%m%dT%H%M%S')
-                dtend_str = dtend.strftime('%Y%m%dT%H%M%S')
-                tzid = tzinfo.tzname(dtstart) if hasattr(tzinfo, 'tzname') else None
-                ical = (
-                    "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\n"
-                    f"UID:{uid}\nDTSTAMP:{dtstamp.strftime('%Y%m%dT%H%M%S')}Z\nSEQUENCE:0\n"
-                    f"SUMMARY:{summary}\nDTSTART;TZID={tzid}:{dtstart_str}\nDTEND;TZID={tzid}:{dtend_str}\n"
-                    f"LOCATION:{location}\n"
-                )
-            else:
-                # UTC fallback
-                if tzinfo is None:
-                    dtstart = dtstart.replace(tzinfo=datetime.timezone.utc)
-                    dtend = dtend.replace(tzinfo=datetime.timezone.utc)
-                dtstart_str = dtstart.strftime('%Y%m%dT%H%M%S') + 'Z'
-                dtend_str = dtend.strftime('%Y%m%dT%H%M%S') + 'Z'
-                ical = (
-                    "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\n"
-                    f"UID:{uid}\nDTSTAMP:{dtstamp.strftime('%Y%m%dT%H%M%S')}Z\nSEQUENCE:0\n"
-                    f"SUMMARY:{summary}\nDTSTART:{dtstart_str}\nDTEND:{dtend_str}\n"
-                    f"LOCATION:{location}\n"
-                )
-        if original_uid:
-            ical += f"X-ORIGINAL-UID:{original_uid}\n"
-        if rsvp:
-            ical += f"RSVP:{rsvp}\n"
-        ical += "END:VEVENT\nEND:VCALENDAR"
-        return ical
+            
+            # Use the UTC times for iCalendar output
+            dtstart_str = dtstart.strftime('%Y%m%dT%H%M%S') + 'Z'
+            dtend_str = dtend.strftime('%Y%m%dT%H%M%S') + 'Z'
+            
+            ical_parts.append(f"DTSTART:{dtstart_str}\n")
+            ical_parts.append(f"DTEND:{dtend_str}\n")
+
+        if event.get("location"):
+            sanitized_location = self.sanitize_text(event['location'])
+            ical_parts.append(f"LOCATION:{sanitized_location}\n")
+        if event.get("original_uid"):
+            ical_parts.append(f"X-ORIGINAL-UID:{event['original_uid']}\n")
+        if event.get("rsvp"):
+            ical_parts.append(f"RSVP:{event['rsvp']}\n")
+
+        ical_parts.append("END:VEVENT\nEND:VCALENDAR")
+        
+        return "".join(ical_parts)
 
 
 def main():
