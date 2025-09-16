@@ -130,6 +130,12 @@ class EventTransformer:
         if not dest_cal:
             raise Exception(f"Destination calendar '{self.dest_calendar}' not found.")
         now = datetime.datetime.now(datetime.timezone.utc)
+        if self.max_age_days is not None and self.max_age_days > 0:
+            start_time = now - datetime.timedelta(days=self.max_age_days)
+            end_time = now + datetime.timedelta(days=self.max_age_days)
+        else:
+            start_time = now - datetime.timedelta(days=365)
+            end_time = now + datetime.timedelta(days=365)
 
         # For each filter set, process only events from its source calendar
         transformed = []
@@ -144,7 +150,12 @@ class EventTransformer:
                     print(f"Warning: Source calendar '{cal_name}' not found.")
                     source_events_by_cal[cal_name] = []
                     continue
-                events = cal.events()
+                events = cal.search(
+                    start=start_time,
+                    end=end_time,
+                    event=True,
+                    expand=True
+                )
                 event_list = []
                 for e in events:
                     vevent = None
