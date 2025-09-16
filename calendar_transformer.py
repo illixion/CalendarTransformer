@@ -1,16 +1,3 @@
-"""
-CalendarManager: CalDAV Event Transformer
-
-This script reads a local TOML config, connects to Fastmail CalDAV, filters and transforms events, and saves them to a destination calendar without duplicates.
-
-Requirements:
-- toml
-- caldav
-
-Install with:
-  pip install toml caldav
-"""
-
 import toml
 import caldav
 from caldav.elements import dav, cdav
@@ -73,15 +60,46 @@ class EventTransformer:
     def transform_event(self, event, transformation):
         # Apply transformation rules from config only
         t = transformation
+
+        def match_substring(val, substrings, negate=False):
+            if not substrings:
+                return False
+            for s in substrings:
+                if (s in val) != negate:
+                    return True
+            return False
+
         if t.get("set_event_name") is not None:
             event["summary"] = t["set_event_name"]
         if t.get("set_location") is not None:
             event["location"] = t["set_location"]
         if t.get("set_rsvp_status") is not None:
             event["rsvp"] = t["set_rsvp_status"]
-        if t.get("strip_name"):
+
+        # Conditional stripping for event name
+        strip_name = t.get("strip_name", False)
+        do_strip_name = strip_name
+        if strip_name:
+            # If substring found in event name, strip
+            if match_substring(event["summary"], t.get("strip_if_event_name_contains", []), False):
+                do_strip_name = True
+            # If substring found in event name _not_, skip stripping
+            if match_substring(event["summary"], t.get("strip_if_event_name_not_contains", []), False):
+                do_strip_name = False
+        if do_strip_name:
             event["summary"] = ""
-        if t.get("strip_location"):
+
+        # Conditional stripping for location
+        strip_location = t.get("strip_location", False)
+        do_strip_location = strip_location
+        if strip_location:
+            # If substring found in location, strip
+            if match_substring(event.get("location", ""), t.get("strip_if_location_contains", []), False):
+                do_strip_location = True
+            # If substring found in location _not_, skip stripping
+            if match_substring(event.get("location", ""), t.get("strip_if_location_not_contains", []), False):
+                do_strip_location = False
+        if do_strip_location:
             event["location"] = ""
         return event
 
