@@ -52,7 +52,7 @@ dest_calendar = "DestinationCalendarName"
 
 ### Max Age (Optional)
 
-Process only events within the last N days:
+Include events older than N days and not newer than N days into the future:
 ```toml
 max_age_days = 30
 ```
@@ -110,6 +110,103 @@ transformations = {
 - Only events from calendars listed in your config are processed
 - All-day events and timezones are handled automatically
 - For best results, use a dedicated destination calendar
+
+## Systemd How-To
+
+This project can be scheduled to run automatically every hour using systemd.
+The setup uses a oneshot service (runs once and exits) together with a systemd timer (triggers it hourly).
+
+1. Create a dedicated system user
+
+For security, do not run the script as root. Create a special user:
+
+```
+sudo useradd -r -s /usr/sbin/nologin calendar
+sudo chown -R calendar:calendar /opt/CalendarTransformer
+```
+
+2. Service unit file
+
+Create `/etc/systemd/system/calendar-transformer.service`:
+
+```
+[Unit]
+Description=Calendar Transformer Job
+
+[Service]
+Type=oneshot
+User=calendar
+Group=calendar
+WorkingDirectory=/opt/CalendarTransformer
+ExecStart=/opt/CalendarTransformer/venv/bin/python /opt/CalendarTransformer/calendar_transformer.py
+```
+
+3. Timer unit file
+
+Create `/etc/systemd/system/calendar-transformer.timer`:
+
+```
+[Unit]
+Description=Run Calendar Transformer every hour
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+- OnCalendar=hourly → runs at the start of every hour
+- Persistent=true → runs missed jobs after reboot
+
+4. Enable and start
+
+Reload systemd, enable the timer, and start it:
+
+```
+sudo systemctl daemon-reload
+sudo systemctl enable --now calendar-transformer.timer
+```
+
+5. Useful commands
+
+- Check when it will run next:
+
+`systemctl list-timers | grep calendar-transformer`
+
+
+- Manually run the script immediately:
+
+`sudo systemctl start calendar-transformer.service`
+
+
+- Check logs of last run:
+
+`journalctl -u calendar-transformer.service -e`
+
+
+- Stop automatic scheduling:
+
+`sudo systemctl disable --now calendar-transformer.timer`
+
+
+- Show unit status:
+
+```
+systemctl status calendar-transformer.service
+systemctl status calendar-transformer.timer
+```
+
+6. File overview
+
+| Path | Purpose |
+|--------|-------------|
+| /etc/systemd/system/calendar-transformer.service | Runs the Python script once |
+| /etc/systemd/system/calendar-transformer.timer | Triggers the service every hour |
+| /opt/CalendarTransformer/calendar_transformer.py | Your project’s main script |
+| /opt/CalendarTransformer/config.toml | Configuration file |
+| /opt/CalendarTransformer/venv/ | Python virtual environment |
 
 ## License
 
