@@ -66,6 +66,7 @@ class EventTransformer:
             if not substrings:
                 return False
             # Normalize the input string by removing all newlines
+            val = val or ""
             normalized_val = val.replace('\n', ' ').strip()
             for s in substrings:
                 # Normalize the config string as well, in case it has unintended newlines
@@ -93,6 +94,7 @@ class EventTransformer:
                 do_strip_name = False
         if do_strip_name:
             event["summary"] = ""
+
 
         # Conditional stripping for location
         strip_location = t.get("strip_location", False)
