@@ -12,6 +12,13 @@ CONFIG_PATH = "config.toml"
 
 logging.basicConfig(level=logging.INFO)
 
+def ensure_list(val):
+    if val is None:
+        return []
+    if isinstance(val, str):
+        return [val]
+    return list(val)
+
 class EventTransformer:
     def should_delete_event(self, event):
         # Delete if RSVP is DECLINED or summary starts with ❌
@@ -48,13 +55,13 @@ class EventTransformer:
             return False
         if f.get("not_calendar_name") and cal_name == f["not_calendar_name"]:
             return False
-        if not match_substring(summary, f.get("event_name_contains", []), False):
+        if not match_substring(summary, ensure_list(f.get("event_name_contains", [])), False):
             return False
-        if not match_substring(summary, f.get("event_name_not_contains", []), True):
+        if not match_substring(summary, ensure_list(f.get("event_name_not_contains", [])), True):
             return False
-        if not match_substring(location, f.get("location_contains", []), False):
+        if not match_substring(location, ensure_list(f.get("location_contains", [])), False):
             return False
-        if not match_substring(location, f.get("location_not_contains", []), True):
+        if not match_substring(location, ensure_list(f.get("location_not_contains", [])), True):
             return False
         return True
 
@@ -87,10 +94,10 @@ class EventTransformer:
         do_strip_name = strip_name
         if strip_name or t.get("strip_if_event_name_contains") or t.get("strip_if_event_name_not_contains"):
             # If substring found in event name, strip
-            if match_substring(event.get("summary", ""), t.get("strip_if_event_name_contains", []), False):
+            if match_substring(event.get("summary", ""), ensure_list(t.get("strip_if_event_name_contains", [])), False):
                 do_strip_name = True
             # If substring found in event name _not_, skip stripping
-            if match_substring(event.get("summary", ""), t.get("strip_if_event_name_not_contains", []), True):
+            if match_substring(event.get("summary", ""), ensure_list(t.get("strip_if_event_name_not_contains", [])), True):
                 do_strip_name = False
         if do_strip_name:
             event["summary"] = ""
@@ -101,10 +108,10 @@ class EventTransformer:
         do_strip_location = strip_location
         if strip_location or t.get("strip_if_location_contains") or t.get("strip_if_location_not_contains"):
             # If substring found in location, strip
-            if match_substring(event.get("location", ""), t.get("strip_if_location_contains", []), False):
+            if match_substring(event.get("location", ""), ensure_list(t.get("strip_if_location_contains", [])), False):
                 do_strip_location = True
             # If substring found in location _not_, skip stripping
-            if match_substring(event.get("location", ""), t.get("strip_if_location_not_contains", []), False):
+            if match_substring(event.get("location", ""), ensure_list(t.get("strip_if_location_not_contains", [])), False):
                 do_strip_location = False
         if do_strip_location:
             event["location"] = ""
@@ -170,12 +177,23 @@ class EventTransformer:
                         except Exception as ex:
                             print(f"Failed to parse event data: {ex}")
                             continue
+                    # Extract dtstart, dtend, duration
+                    dtstart = vevent.dtstart.value
+                    dtend = getattr(vevent, "dtend", None) and vevent.dtend.value
+                    duration = getattr(vevent, "duration", None) and vevent.duration.value
+                    # If duration is present and dtend is missing, calculate dtend
+                    if duration and not dtend:
+                        if isinstance(dtstart, datetime.datetime):
+                            dtend = dtstart + duration
+                        elif isinstance(dtstart, datetime.date):
+                            # For all-day events, duration should be timedelta
+                            dtend = dtstart + duration
                     event = {
                         "calendar": cal.name,
                         "uid": getattr(vevent, "uid", None) and vevent.uid.value,
                         "summary": vevent.summary.value,
-                        "dtstart": vevent.dtstart.value,
-                        "dtend": getattr(vevent, "dtend", None) and vevent.dtend.value,
+                        "dtstart": dtstart,
+                        "dtend": dtend,
                         "location": getattr(vevent, "location", None) and vevent.location.value,
                         "rsvp": (
                             getattr(vevent, "partstat", None) and vevent.partstat.value
@@ -183,7 +201,7 @@ class EventTransformer:
                             else ""
                         ),
                     }
-                    
+
                     # Use a default timezone if the event is naive
                     local_tz = datetime.datetime.now().astimezone().tzinfo
                     
@@ -273,6 +291,7 @@ class EventTransformer:
             dest_cal.save_event(ical, no_overwrite=True)
 
     def event_to_ical(self, event):
+
         dtstart = event["dtstart"]
         dtend = event.get("dtend")
 
@@ -286,25 +305,27 @@ class EventTransformer:
 
         # All-day event detection
         is_all_day = isinstance(dtstart, datetime.date) and not isinstance(dtstart, datetime.datetime)
-        
+
         if is_all_day:
             dtstart_date = dtstart.date() if isinstance(dtstart, datetime.datetime) else dtstart
             if dtend:
                 dtend_date = dtend.date() if isinstance(dtend, datetime.datetime) else dtend
             else:
                 dtend_date = dtstart_date + datetime.timedelta(days=1)
-            
             ical_parts.append(f"DTSTART;VALUE=DATE:{dtstart_date.strftime('%Y%m%d')}\n")
             ical_parts.append(f"DTEND;VALUE=DATE:{dtend_date.strftime('%Y%m%d')}\n")
         else:
             # Timed events (UTC)
             if dtend is None:
-                dtend = dtstart + datetime.timedelta(hours=1)
-            
+                # Try to use duration if present
+                duration = event.get("duration")
+                if duration:
+                    dtend = dtstart + duration
+                else:
+                    dtend = dtstart + datetime.timedelta(hours=1)
             # Use the UTC times for iCalendar output
             dtstart_str = dtstart.strftime('%Y%m%dT%H%M%S') + 'Z'
             dtend_str = dtend.strftime('%Y%m%dT%H%M%S') + 'Z'
-            
             ical_parts.append(f"DTSTART:{dtstart_str}\n")
             ical_parts.append(f"DTEND:{dtend_str}\n")
 
@@ -317,7 +338,6 @@ class EventTransformer:
             ical_parts.append(f"RSVP:{event['rsvp']}\n")
 
         ical_parts.append("END:VEVENT\nEND:VCALENDAR")
-        
         return "".join(ical_parts)
 
 
