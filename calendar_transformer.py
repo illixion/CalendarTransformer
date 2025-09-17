@@ -34,8 +34,8 @@ class EventTransformer:
         self.config = config
         self.filter_sets = config.get("filter_sets", [])
         self.dest_calendar = config.get("dest_calendar")
-        self.max_age_days = config.get("max_age_days", None)
-        self.history_keep_days = config.get("history_keep_days", None)
+        self.future_scan_days = config.get("future_scan_days", None)
+        self.past_keep_days = config.get("past_keep_days", None)
 
     def match_event(self, event, filter_obj):
         # Filtering logic: calendar name, event name, location substring, negation
@@ -142,22 +142,22 @@ class EventTransformer:
         now = datetime.datetime.now(datetime.timezone.utc)
         
         # Determine the search range for source events
-        # Search start date is based on history_keep_days to fetch all relevant past events
-        if self.history_keep_days is not None and self.history_keep_days >= 0:
-            search_start_date = now - datetime.timedelta(days=self.history_keep_days)
+        # Search start date is based on past_keep_days to fetch all relevant past events
+        if self.past_keep_days is not None and self.past_keep_days >= 0:
+            search_start_date = now - datetime.timedelta(days=self.past_keep_days)
         else:
             # Fallback for full history
             search_start_date = now - datetime.timedelta(days=365) # A safe default to get a reasonable amount of history
 
-        # Search end date is based on max_age_days to limit future scans
-        if self.max_age_days is not None and self.max_age_days > 0:
-            search_end_date = now + datetime.timedelta(days=self.max_age_days)
+        # Search end date is based on future_scan_days to limit future scans
+        if self.future_scan_days is not None and self.future_scan_days > 0:
+            search_end_date = now + datetime.timedelta(days=self.future_scan_days)
         else:
             # Fallback for a reasonable future scan window
             search_end_date = now + datetime.timedelta(days=365)
 
-        # Delete old events from the destination calendar based on history_keep_days
-        if self.history_keep_days is not None:
+        # Delete old events from the destination calendar based on past_keep_days
+        if self.past_keep_days is not None:
             dest_events_to_delete = []
             dest_events = dest_cal.events()
             
@@ -166,18 +166,18 @@ class EventTransformer:
                     vevent = e.vobject_instance.vevent
                     dtend = getattr(vevent, "dtend", None) and vevent.dtend.value
                     
-                    if self.history_keep_days == 0:
-                        # Case 1: Delete all past events (history_keep_days = 0)
+                    if self.past_keep_days == 0:
+                        # Case 1: Delete all past events (past_keep_days = 0)
                         if dtend:
                             # Normalize dtend for comparison with now
                             dtend_aware = dtend.astimezone(datetime.timezone.utc) if isinstance(dtend, datetime.datetime) else datetime.datetime.combine(dtend, datetime.time.min, tzinfo=datetime.timezone.utc)
                             if dtend_aware < now:
                                 dest_events_to_delete.append(e)
-                    elif self.history_keep_days > 0:
-                        # Case 2: Delete events older than history_keep_days
+                    elif self.past_keep_days > 0:
+                        # Case 2: Delete events older than past_keep_days
                         dtstart = vevent.dtstart.value
                         dtstart_aware = dtstart.astimezone(datetime.timezone.utc) if isinstance(dtstart, datetime.datetime) else datetime.datetime.combine(dtstart, datetime.time.min, tzinfo=datetime.timezone.utc)
-                        history_limit = now - datetime.timedelta(days=self.history_keep_days)
+                        history_limit = now - datetime.timedelta(days=self.past_keep_days)
                         if dtstart_aware < history_limit:
                             dest_events_to_delete.append(e)
                 except Exception as ex:

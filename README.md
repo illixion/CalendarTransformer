@@ -50,22 +50,21 @@ url = "https://caldav.fastmail.com/dav/"
 dest_calendar = "DestinationCalendarName"
 ```
 
-### Max Age (Optional)
+### Future Scan Days (Optional)
 
-Include events older than N days and not newer than N days into the future:
+Limits how far into the future to scan for events (number of days from now).
 ```toml
-max_age_days = 30
+future_scan_days = 30
 ```
 
-### History Keep Days (Optional)
+### Past Keep Days (Optional)
 
-Delete events from destination calendar that are older than N days.
-
+Determines how many days in the past to keep events (number of days before now).
 - Omit to keep full history
 - Use 0 to not keep history
 
 ```toml
-history_keep_days = 30
+past_keep_days = 30
 ```
 
 ### Filter Sets

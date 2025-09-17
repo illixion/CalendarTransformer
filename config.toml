@@ -1,7 +1,8 @@
 # CalendarManager TOML config for advanced transformation and filtering
 
-dest_calendar = "Test Push"
-max_age_days = 30  # Only process events from the last 30 days
+dest_calendar = "Test Push"  # Save transformed events to this calendar
+future_scan_days = 30        # Scan 30 days into the future
+past_keep_days = 90          # Keep events from the past 90 days
 
 [fastmail]
 url = "https://caldav.fastmail.com/dav/"
