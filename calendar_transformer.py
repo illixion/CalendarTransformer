@@ -35,6 +35,7 @@ class EventTransformer:
         self.filter_sets = config.get("filter_sets", [])
         self.dest_calendar = config.get("dest_calendar")
         self.max_age_days = config.get("max_age_days", None)
+        self.history_keep_days = config.get("history_keep_days", None)
 
     def match_event(self, event, filter_obj):
         # Filtering logic: calendar name, event name, location substring, negation
@@ -145,6 +146,39 @@ class EventTransformer:
         else:
             start_time = now - datetime.timedelta(days=365)
             end_time = now + datetime.timedelta(days=365)
+
+        # Delete old events from the destination calendar based on history_keep_days
+        if self.history_keep_days is not None:
+            dest_events_to_delete = []
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            dest_events = dest_cal.events()
+            
+            for e in dest_events:
+                try:
+                    vevent = e.vobject_instance.vevent
+                    dtend = getattr(vevent, "dtend", None) and vevent.dtend.value
+                    
+                    if self.history_keep_days == 0:
+                        # Case 1: Delete all past events (history_keep_days = 0)
+                        if dtend:
+                            # Normalize dtend for comparison with now_utc
+                            dtend_aware = dtend.astimezone(datetime.timezone.utc) if isinstance(dtend, datetime.datetime) else datetime.datetime.combine(dtend, datetime.time.min, tzinfo=datetime.timezone.utc)
+                            if dtend_aware < now_utc:
+                                dest_events_to_delete.append(e)
+                    elif self.history_keep_days > 0:
+                        # Case 2: Delete events older than history_keep_days
+                        dtstart = vevent.dtstart.value
+                        dtstart_aware = dtstart.astimezone(datetime.timezone.utc) if isinstance(dtstart, datetime.datetime) else datetime.datetime.combine(dtstart, datetime.time.min, tzinfo=datetime.timezone.utc)
+                        history_limit = now_utc - datetime.timedelta(days=self.history_keep_days)
+                        if dtstart_aware < history_limit:
+                            dest_events_to_delete.append(e)
+                except Exception as ex:
+                    logging.error(f"Failed to parse or process destination event for deletion: {ex}")
+                    continue
+
+            for e in dest_events_to_delete:
+                logging.info(f"Deleting old event: {e.vobject_instance.vevent.summary.value} from {self.dest_calendar}")
+                e.delete()
 
         # For each filter set, process only events from its source calendar
         transformed = []

@@ -57,6 +57,17 @@ Include events older than N days and not newer than N days into the future:
 max_age_days = 30
 ```
 
+### History Keep Days (Optional)
+
+Delete events from destination calendar that are older than N days.
+
+- Omit to keep full history
+- Use 0 to not keep history
+
+```toml
+history_keep_days = 30
+```
+
 ### Filter Sets
 
 Define multiple filter sets to control which events are selected and how they are transformed.
