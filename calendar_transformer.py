@@ -140,17 +140,25 @@ class EventTransformer:
         if not dest_cal:
             raise Exception(f"Destination calendar '{self.dest_calendar}' not found.")
         now = datetime.datetime.now(datetime.timezone.utc)
-        if self.max_age_days is not None and self.max_age_days > 0:
-            start_time = now - datetime.timedelta(days=self.max_age_days)
-            end_time = now + datetime.timedelta(days=self.max_age_days)
+        
+        # Determine the search range for source events
+        # Search start date is based on history_keep_days to fetch all relevant past events
+        if self.history_keep_days is not None and self.history_keep_days >= 0:
+            search_start_date = now - datetime.timedelta(days=self.history_keep_days)
         else:
-            start_time = now - datetime.timedelta(days=365)
-            end_time = now + datetime.timedelta(days=365)
+            # Fallback for full history
+            search_start_date = now - datetime.timedelta(days=365) # A safe default to get a reasonable amount of history
+
+        # Search end date is based on max_age_days to limit future scans
+        if self.max_age_days is not None and self.max_age_days > 0:
+            search_end_date = now + datetime.timedelta(days=self.max_age_days)
+        else:
+            # Fallback for a reasonable future scan window
+            search_end_date = now + datetime.timedelta(days=365)
 
         # Delete old events from the destination calendar based on history_keep_days
         if self.history_keep_days is not None:
             dest_events_to_delete = []
-            now_utc = datetime.datetime.now(datetime.timezone.utc)
             dest_events = dest_cal.events()
             
             for e in dest_events:
@@ -161,15 +169,15 @@ class EventTransformer:
                     if self.history_keep_days == 0:
                         # Case 1: Delete all past events (history_keep_days = 0)
                         if dtend:
-                            # Normalize dtend for comparison with now_utc
+                            # Normalize dtend for comparison with now
                             dtend_aware = dtend.astimezone(datetime.timezone.utc) if isinstance(dtend, datetime.datetime) else datetime.datetime.combine(dtend, datetime.time.min, tzinfo=datetime.timezone.utc)
-                            if dtend_aware < now_utc:
+                            if dtend_aware < now:
                                 dest_events_to_delete.append(e)
                     elif self.history_keep_days > 0:
                         # Case 2: Delete events older than history_keep_days
                         dtstart = vevent.dtstart.value
                         dtstart_aware = dtstart.astimezone(datetime.timezone.utc) if isinstance(dtstart, datetime.datetime) else datetime.datetime.combine(dtstart, datetime.time.min, tzinfo=datetime.timezone.utc)
-                        history_limit = now_utc - datetime.timedelta(days=self.history_keep_days)
+                        history_limit = now - datetime.timedelta(days=self.history_keep_days)
                         if dtstart_aware < history_limit:
                             dest_events_to_delete.append(e)
                 except Exception as ex:
@@ -193,12 +201,15 @@ class EventTransformer:
                     print(f"Warning: Source calendar '{cal_name}' not found.")
                     source_events_by_cal[cal_name] = []
                     continue
+                
+                # Use the new search dates to query events
                 events = cal.search(
-                    start=start_time,
-                    end=end_time,
+                    start=search_start_date,
+                    end=search_end_date,
                     event=True,
                     expand=True
                 )
+
                 event_list = []
                 for e in events:
                     vevent = None
@@ -211,17 +222,18 @@ class EventTransformer:
                         except Exception as ex:
                             print(f"Failed to parse event data: {ex}")
                             continue
-                    # Extract dtstart, dtend, duration
+                    
+                    # Extract event data
                     dtstart = vevent.dtstart.value
                     dtend = getattr(vevent, "dtend", None) and vevent.dtend.value
                     duration = getattr(vevent, "duration", None) and vevent.duration.value
-                    # If duration is present and dtend is missing, calculate dtend
                     if duration and not dtend:
                         if isinstance(dtstart, datetime.datetime):
                             dtend = dtstart + duration
                         elif isinstance(dtstart, datetime.date):
-                            # For all-day events, duration should be timedelta
                             dtend = dtstart + duration
+
+                    # Create a dictionary for the event
                     event = {
                         "calendar": cal.name,
                         "uid": getattr(vevent, "uid", None) and vevent.uid.value,
@@ -236,33 +248,18 @@ class EventTransformer:
                         ),
                     }
 
-                    # Use a default timezone if the event is naive
+                    # Handle naive datetimes and convert to UTC
                     local_tz = datetime.datetime.now().astimezone().tzinfo
-                    
                     if isinstance(event['dtstart'], datetime.datetime) and event['dtstart'].tzinfo is None:
-                        # Assume naive events are in the local system timezone
                         event['dtstart'] = event['dtstart'].replace(tzinfo=local_tz)
                         if event['dtend'] and isinstance(event['dtend'], datetime.datetime) and event['dtend'].tzinfo is None:
                             event['dtend'] = event['dtend'].replace(tzinfo=local_tz)
 
-                    # Now, convert all timezone-aware timed events to UTC for internal consistency
                     if isinstance(event['dtstart'], datetime.datetime):
                         event['dtstart'] = event['dtstart'].astimezone(datetime.timezone.utc)
                         if event['dtend'] and isinstance(event['dtend'], datetime.datetime):
                             event['dtend'] = event['dtend'].astimezone(datetime.timezone.utc)
                     
-                    # Fix: ensure both datetimes are offset-aware for subtraction
-                    dtstart = event["dtstart"]
-
-                    if self.max_age_days is not None and self.max_age_days > 0:
-                        if isinstance(dtstart, datetime.date) and not isinstance(dtstart, datetime.datetime):
-                            dtstart = datetime.datetime.combine(dtstart, datetime.time.min, tzinfo=datetime.timezone.utc)
-                        elif isinstance(dtstart, datetime.datetime) and dtstart.tzinfo is None:
-                            dtstart = dtstart.replace(tzinfo=datetime.timezone.utc)
-                        age = (now - dtstart).days
-                        if age > self.max_age_days:
-                            continue
-                        event["dtstart"] = dtstart
                     event_list.append(event)
                 source_events_by_cal[cal_name] = event_list
             # Only process events from this filter's calendar
@@ -324,8 +321,8 @@ class EventTransformer:
             ical = self.event_to_ical(e)
             dest_cal.save_event(ical, no_overwrite=True)
 
-    def event_to_ical(self, event):
 
+    def event_to_ical(self, event):
         dtstart = event["dtstart"]
         dtend = event.get("dtend")
 
