@@ -1,4 +1,4 @@
-# CalendarManager TOML config for advanced transformation and filtering
+# Rename to config.toml and fill in your details
 
 dest_calendar = "Test Push"  # Save transformed events to this calendar
 future_scan_days = 30        # Scan 30 days into the future

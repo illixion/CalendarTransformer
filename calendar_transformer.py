@@ -156,37 +156,57 @@ class EventTransformer:
             # Fallback for a reasonable future scan window
             search_end_date = now + datetime.timedelta(days=365)
 
-        # Delete old events from the destination calendar based on past_keep_days
-        if self.past_keep_days is not None:
-            dest_events_to_delete = []
-            dest_events = dest_cal.events()
-            
-            for e in dest_events:
-                try:
-                    vevent = e.vobject_instance.vevent
-                    dtend = getattr(vevent, "dtend", None) and vevent.dtend.value
-                    
+        # Get all destination calendar events
+        dest_events = dest_cal.events()
+        events_to_delete = []
+        dest_keys = set()
+
+        # Process all destination events once to:
+        # 1. Mark old events for deletion
+        # 2. Build set of existing UIDs
+        # 3. Handle deletions based on source events
+        for e in dest_events:
+            try:
+                vevent = e.vobject_instance.vevent
+                summary = vevent.summary.value
+                dtstart = vevent.dtstart.value
+                dtend = getattr(vevent, "dtend", None) and vevent.dtend.value
+                original_uid = getattr(vevent, "x_original_uid", None)
+                current_uid = original_uid.value if original_uid else vevent.uid.value
+
+                # Add to existing UIDs set (for duplicate prevention)
+                dest_keys.add(current_uid)
+
+                should_delete = False
+                
+                # Check for old events if past_keep_days is set
+                if self.past_keep_days is not None:
                     if self.past_keep_days == 0:
-                        # Case 1: Delete all past events (past_keep_days = 0)
+                        # Delete all past events
                         if dtend:
-                            # Normalize dtend for comparison with now
                             dtend_aware = dtend.astimezone(datetime.timezone.utc) if isinstance(dtend, datetime.datetime) else datetime.datetime.combine(dtend, datetime.time.min, tzinfo=datetime.timezone.utc)
                             if dtend_aware < now:
-                                dest_events_to_delete.append(e)
+                                should_delete = True
+                                logging.info(f"Deleting past event: {summary}")
                     elif self.past_keep_days > 0:
-                        # Case 2: Delete events older than past_keep_days
-                        dtstart = vevent.dtstart.value
+                        # Delete events older than past_keep_days
                         dtstart_aware = dtstart.astimezone(datetime.timezone.utc) if isinstance(dtstart, datetime.datetime) else datetime.datetime.combine(dtstart, datetime.time.min, tzinfo=datetime.timezone.utc)
                         history_limit = now - datetime.timedelta(days=self.past_keep_days)
                         if dtstart_aware < history_limit:
-                            dest_events_to_delete.append(e)
-                except Exception as ex:
-                    logging.error(f"Failed to parse or process destination event for deletion: {ex}")
-                    continue
+                            should_delete = True
+                            logging.info(f"Deleting old event: {summary}")
 
-            for e in dest_events_to_delete:
-                logging.info(f"Deleting old event: {e.vobject_instance.vevent.summary.value} from {self.dest_calendar}")
-                e.delete()
+                if should_delete:
+                    events_to_delete.append(e)
+
+            except Exception as ex:
+                logging.error(f"Failed to parse or process destination event: {ex}")
+                continue
+
+        # Delete marked events
+        logging.info(f"Deleting {len(events_to_delete)} old events from '{self.dest_calendar}'.")
+        for e in events_to_delete:
+            e.delete()
 
         # For each filter set, process only events from its source calendar
         transformed = []
@@ -275,17 +295,17 @@ class EventTransformer:
                     )
                 )
 
-        # Deletion phase
-        # 1. Get all transformed source events' UIDs for comparison
+        # Get all transformed source events' UIDs for comparison
         source_event_uids = {self.event_uid(e) for e in transformed}
-        
-        # 2. Get all events from destination calendar
-        dest_events = dest_cal.events()
+
+        # Process remaining destination events for deletion based on source events
+        remaining_events_to_delete = []
         for e in dest_events:
+            if e in events_to_delete:  # Skip if already marked for deletion
+                continue
+                
             vevent = e.vobject_instance.vevent
             summary = vevent.summary.value
-            
-            # Get the original UID (from source) or current UID if not a transformed event
             original_uid = getattr(vevent, "x_original_uid", None)
             current_uid = original_uid.value if original_uid else vevent.uid.value
             
@@ -293,14 +313,11 @@ class EventTransformer:
             # - Event was previously imported (has original_uid) but source no longer has it
             # - Event is marked with ❌
             # - Matching source event exists and should be deleted (e.g., DECLINED)
-            should_delete = False
-            
             if original_uid and current_uid not in source_event_uids:
-                # Event was previously imported but no longer exists in source
-                should_delete = True
+                remaining_events_to_delete.append(e)
                 logging.info(f"Deleting event no longer in source: {summary}")
             elif summary.startswith("❌"):
-                should_delete = True
+                remaining_events_to_delete.append(e)
                 logging.info(f"Deleting declined event: {summary}")
             else:
                 # Check if there's a matching source event that should be deleted
@@ -309,20 +326,14 @@ class EventTransformer:
                     None
                 )
                 if src_event and self.should_delete_event(src_event):
-                    should_delete = True
+                    remaining_events_to_delete.append(e)
                     logging.info(f"Deleting declined event from source: {summary}")
-            
-            if should_delete:
-                e.delete()
 
-        # Collect remaining destination events' UIDs to prevent duplicates
-        dest_events = dest_cal.events()
-        dest_keys = {
-            getattr(e.vobject_instance.vevent, "x_original_uid", None).value
-            if getattr(e.vobject_instance.vevent, "x_original_uid", None)
-            else e.vobject_instance.vevent.uid.value
-            for e in dest_events
-        }
+        # Delete remaining marked events
+        logging.info(f"Deleting {len(remaining_events_to_delete)} additional events from '{self.dest_calendar}'.")
+        for e in remaining_events_to_delete:
+            e.delete()
+
         # Print count of events we're about to add
         logging.info(f"Found {len(transformed)} eligible events, will add to '{self.dest_calendar}'.")
         # Save transformed events
