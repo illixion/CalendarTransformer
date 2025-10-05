@@ -22,6 +22,13 @@ def ensure_list(val):
 
 
 class EventTransformer:
+    def __init__(self, config):
+        self.config = config
+        self.filter_sets = config.get("filter_sets", [])
+        self.dest_calendar = config.get("dest_calendar")
+        self.future_scan_days = config.get("future_scan_days", None)
+        self.past_keep_days = config.get("past_keep_days", None)
+
     def should_delete_event(self, event):
         # Delete if RSVP is DECLINED or summary starts with ❌
         rsvp = event.get("rsvp", "")
@@ -32,12 +39,18 @@ class EventTransformer:
             return True
         return False
 
-    def __init__(self, config):
-        self.config = config
-        self.filter_sets = config.get("filter_sets", [])
-        self.dest_calendar = config.get("dest_calendar")
-        self.future_scan_days = config.get("future_scan_days", None)
-        self.past_keep_days = config.get("past_keep_days", None)
+    def event_key(self, event):
+        # Create a unique key combining UID and start date to handle recurring events
+        uid = event.get('original_uid') or event.get('uid')
+        dtstart = event.get('dtstart')
+        if isinstance(dtstart, datetime.datetime):
+            # Convert to UTC for consistent comparison
+            dtstart = dtstart.astimezone(datetime.timezone.utc)
+            date_str = dtstart.strftime('%Y%m%d%H%M%S')
+        else:
+            # All-day event
+            date_str = dtstart.strftime('%Y%m%d')
+        return f"{uid}_{date_str}"
 
     def match_event(self, event, filter_obj):
         # Filtering logic: calendar name, event name, location substring, negation
@@ -150,10 +163,6 @@ class EventTransformer:
         if do_strip_location:
             event["location"] = ""
         return event
-
-    def event_uid(self, event):
-        # Use original_uid for duplicate detection
-        return event.get("original_uid") or event.get("uid")
 
     def sanitize_text(self, text):
         if not text:
@@ -367,8 +376,8 @@ class EventTransformer:
                     self.transform_event(e_copy, filter_obj.get("transformations", {}))
                 )
 
-        # Get all transformed source events' UIDs for comparison
-        source_event_uids = {self.event_uid(e) for e in transformed}
+        # Get all transformed source events' keys (UID + date) for comparison
+        source_event_keys = {self.event_key(e) for e in transformed}
 
         # Process remaining destination events for deletion based on source events
         remaining_events_to_delete = []
@@ -378,14 +387,21 @@ class EventTransformer:
 
             vevent = e.vobject_instance.vevent
             summary = vevent.summary.value
-            original_uid = getattr(vevent, "x_original_uid", None)
-            current_uid = original_uid.value if original_uid else vevent.uid.value
+            dtstart = vevent.dtstart.value
+            
+            # Create a destination event dict for key comparison
+            dest_event = {
+                "uid": vevent.uid.value,
+                "original_uid": getattr(vevent, "x_original_uid", None) and vevent.x_original_uid.value,
+                "dtstart": dtstart
+            }
+            event_key = self.event_key(dest_event)
 
             # Delete if any of these conditions are met:
             # - Event was previously imported (has original_uid) but source no longer has it
             # - Event is marked with ❌
             # - Matching source event exists and should be deleted (e.g., DECLINED)
-            if original_uid and current_uid not in source_event_uids:
+            if dest_event["original_uid"] and event_key not in source_event_keys:
                 remaining_events_to_delete.append(e)
                 logging.info(f"Deleting event no longer in source: {summary}")
             elif summary.startswith("❌"):
@@ -393,13 +409,19 @@ class EventTransformer:
                 logging.info(f"Deleting declined event: {summary}")
             else:
                 # Check if there's a matching source event that should be deleted
+                # Create event key for comparison using the same structure
+                dest_event_for_key = {
+                    "uid": current_uid,
+                    "dtstart": dtstart
+                }
+                dest_key = self.event_key(dest_event_for_key)
                 src_event = next(
-                    (ev for ev in transformed if self.event_uid(ev) == current_uid),
-                    None,
+                    (ev for ev in transformed if self.event_key(ev) == dest_key),
+                    None
                 )
                 if src_event and self.should_delete_event(src_event):
                     remaining_events_to_delete.append(e)
-                    logging.info(f"Deleting declined event from source: {summary}")
+                    logging.info(f"Deleting declined event: {summary}")
 
         # Delete remaining marked events
         if remaining_events_to_delete:
@@ -409,12 +431,21 @@ class EventTransformer:
         for e in remaining_events_to_delete:
             e.delete()
 
+        # Build a set of existing event keys (UID + date) to prevent duplicates
+        dest_events_dict = {
+            self.event_key({
+                "uid": e.vobject_instance.vevent.uid.value,
+                "original_uid": getattr(e.vobject_instance.vevent, "x_original_uid", None) and e.vobject_instance.vevent.x_original_uid.value,
+                "dtstart": e.vobject_instance.vevent.dtstart.value
+            }) for e in dest_events
+        }
+
         # Print count of events we're about to add
         logging.info(f"Found {len(transformed)} eligible events.")
         # Save transformed events
         for e in transformed:
-            key = self.event_uid(e)
-            if key in dest_keys:
+            key = self.event_key(e)
+            if key in dest_events_dict:
                 continue  # Skip duplicate
             logging.info(
                 f"Adding event: {e['summary']} on {e['dtstart']} to {self.dest_calendar}"
