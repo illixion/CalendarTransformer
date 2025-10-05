@@ -275,41 +275,54 @@ class EventTransformer:
                     )
                 )
 
-        # Deletion phase: remove declined/❌ events from dest
+        # Deletion phase
+        # 1. Get all transformed source events' UIDs for comparison
+        source_event_uids = {self.event_uid(e) for e in transformed}
+        
+        # 2. Get all events from destination calendar
         dest_events = dest_cal.events()
         for e in dest_events:
             vevent = e.vobject_instance.vevent
-            uid = getattr(vevent, "uid", None) and vevent.uid.value
             summary = vevent.summary.value
-            dtstart = vevent.dtstart.value
-            # Find matching source event
-            src_event = next(
-                (
-                    ev
-                    for ev in transformed
-                    if (
-                        ev.get("uid") == uid
-                        or (ev["summary"] == summary and ev["dtstart"] == dtstart)
-                    )
-                ),
-                None,
-            )
-            if src_event and self.should_delete_event(src_event):
-                e.delete()
+            
+            # Get the original UID (from source) or current UID if not a transformed event
+            original_uid = getattr(vevent, "x_original_uid", None)
+            current_uid = original_uid.value if original_uid else vevent.uid.value
+            
+            # Delete if any of these conditions are met:
+            # - Event was previously imported (has original_uid) but source no longer has it
+            # - Event is marked with ❌
+            # - Matching source event exists and should be deleted (e.g., DECLINED)
+            should_delete = False
+            
+            if original_uid and current_uid not in source_event_uids:
+                # Event was previously imported but no longer exists in source
+                should_delete = True
+                logging.info(f"Deleting event no longer in source: {summary}")
             elif summary.startswith("❌"):
+                should_delete = True
+                logging.info(f"Deleting declined event: {summary}")
+            else:
+                # Check if there's a matching source event that should be deleted
+                src_event = next(
+                    (ev for ev in transformed if self.event_uid(ev) == current_uid),
+                    None
+                )
+                if src_event and self.should_delete_event(src_event):
+                    should_delete = True
+                    logging.info(f"Deleting declined event from source: {summary}")
+            
+            if should_delete:
                 e.delete()
 
-        # Prevent duplicates in dest_calendar using original_uid
+        # Collect remaining destination events' UIDs to prevent duplicates
         dest_events = dest_cal.events()
-        dest_keys = set()
-        for e in dest_events:
-            vevent = e.vobject_instance.vevent
-            original_uid = getattr(vevent, "x_original_uid", None)
-            if original_uid:
-                key = original_uid.value
-            else:
-                key = vevent.uid.value
-            dest_keys.add(key)
+        dest_keys = {
+            getattr(e.vobject_instance.vevent, "x_original_uid", None).value
+            if getattr(e.vobject_instance.vevent, "x_original_uid", None)
+            else e.vobject_instance.vevent.uid.value
+            for e in dest_events
+        }
         # Print count of events we're about to add
         logging.info(f"Found {len(transformed)} eligible events, will add to '{self.dest_calendar}'.")
         # Save transformed events
