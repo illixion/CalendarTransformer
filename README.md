@@ -1,6 +1,6 @@
-# CalendarManager
+# CalendarTransformer
 
-CalendarManager is a Python tool for synchronizing, transforming, and deduplicating calendar events between Fastmail CalDAV calendars. It reads a TOML config file to filter, transform, and copy events from multiple source calendars into a destination calendar, ensuring no duplicates and supporting advanced filtering and transformation rules.
+CalendarTransformer is a Python tool for synchronizing, transforming, and deduplicating calendar events between Fastmail CalDAV calendars. It reads a TOML config file to filter, transform, and copy events from multiple source calendars into a destination calendar, ensuring no duplicates and supporting advanced filtering and transformation rules.
 
 ## Features
 

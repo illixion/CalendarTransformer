@@ -12,12 +12,14 @@ CONFIG_PATH = "config.toml"
 
 logging.basicConfig(level=logging.INFO)
 
+
 def ensure_list(val):
     if val is None:
         return []
     if isinstance(val, str):
         return [val]
     return list(val)
+
 
 class EventTransformer:
     def should_delete_event(self, event):
@@ -56,13 +58,21 @@ class EventTransformer:
             return False
         if f.get("not_calendar_name") and cal_name == f["not_calendar_name"]:
             return False
-        if not match_substring(summary, ensure_list(f.get("event_name_contains", [])), False):
+        if not match_substring(
+            summary, ensure_list(f.get("event_name_contains", [])), False
+        ):
             return False
-        if not match_substring(summary, ensure_list(f.get("event_name_not_contains", [])), True):
+        if not match_substring(
+            summary, ensure_list(f.get("event_name_not_contains", [])), True
+        ):
             return False
-        if not match_substring(location, ensure_list(f.get("location_contains", [])), False):
+        if not match_substring(
+            location, ensure_list(f.get("location_contains", [])), False
+        ):
             return False
-        if not match_substring(location, ensure_list(f.get("location_not_contains", [])), True):
+        if not match_substring(
+            location, ensure_list(f.get("location_not_contains", [])), True
+        ):
             return False
         return True
 
@@ -75,10 +85,10 @@ class EventTransformer:
                 return False
             # Normalize the input string by removing all newlines
             val = val or ""
-            normalized_val = val.replace('\n', ' ').strip()
+            normalized_val = val.replace("\n", " ").strip()
             for s in substrings:
                 # Normalize the config string as well, in case it has unintended newlines
-                normalized_s = s.replace('\n', ' ').strip()
+                normalized_s = s.replace("\n", " ").strip()
                 if (normalized_s in normalized_val) != negate:
                     return True
             return False
@@ -93,26 +103,49 @@ class EventTransformer:
         # Conditional stripping for event name
         strip_name = t.get("strip_name", False)
         do_strip_name = strip_name
-        if strip_name or t.get("strip_if_event_name_contains") or t.get("strip_if_event_name_not_contains"):
+        if (
+            strip_name
+            or t.get("strip_if_event_name_contains")
+            or t.get("strip_if_event_name_not_contains")
+        ):
             # If substring found in event name, strip
-            if match_substring(event.get("summary", ""), ensure_list(t.get("strip_if_event_name_contains", [])), False):
+            if match_substring(
+                event.get("summary", ""),
+                ensure_list(t.get("strip_if_event_name_contains", [])),
+                False,
+            ):
                 do_strip_name = True
             # If substring found in event name _not_, skip stripping
-            if match_substring(event.get("summary", ""), ensure_list(t.get("strip_if_event_name_not_contains", [])), True):
+            if match_substring(
+                event.get("summary", ""),
+                ensure_list(t.get("strip_if_event_name_not_contains", [])),
+                True,
+            ):
                 do_strip_name = False
         if do_strip_name:
             event["summary"] = ""
 
-
         # Conditional stripping for location
         strip_location = t.get("strip_location", False)
         do_strip_location = strip_location
-        if strip_location or t.get("strip_if_location_contains") or t.get("strip_if_location_not_contains"):
+        if (
+            strip_location
+            or t.get("strip_if_location_contains")
+            or t.get("strip_if_location_not_contains")
+        ):
             # If substring found in location, strip
-            if match_substring(event.get("location", ""), ensure_list(t.get("strip_if_location_contains", [])), False):
+            if match_substring(
+                event.get("location", ""),
+                ensure_list(t.get("strip_if_location_contains", [])),
+                False,
+            ):
                 do_strip_location = True
             # If substring found in location _not_, skip stripping
-            if match_substring(event.get("location", ""), ensure_list(t.get("strip_if_location_not_contains", [])), False):
+            if match_substring(
+                event.get("location", ""),
+                ensure_list(t.get("strip_if_location_not_contains", [])),
+                False,
+            ):
                 do_strip_location = False
         if do_strip_location:
             event["location"] = ""
@@ -120,15 +153,15 @@ class EventTransformer:
 
     def event_uid(self, event):
         # Use original_uid for duplicate detection
-        return event.get('original_uid') or event.get('uid')
+        return event.get("original_uid") or event.get("uid")
 
     def sanitize_text(self, text):
         if not text:
             return ""
         # Escape backslashes, semicolons, and commas
-        text = text.replace('\\', '\\\\').replace(';', '\\;').replace(',', '\\,')
+        text = text.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,")
         # Replace newlines with escaped n
-        text = text.replace('\n', '\\n')
+        text = text.replace("\n", "\\n")
         # You may need to fold long lines if they exceed 75 characters, but for newlines, the above is the key fix
         return text
 
@@ -140,14 +173,16 @@ class EventTransformer:
         if not dest_cal:
             raise Exception(f"Destination calendar '{self.dest_calendar}' not found.")
         now = datetime.datetime.now(datetime.timezone.utc)
-        
+
         # Determine the search range for source events
         # Search start date is based on past_keep_days to fetch all relevant past events
         if self.past_keep_days is not None and self.past_keep_days >= 0:
             search_start_date = now - datetime.timedelta(days=self.past_keep_days)
         else:
             # Fallback for full history
-            search_start_date = now - datetime.timedelta(days=365) # A safe default to get a reasonable amount of history
+            search_start_date = now - datetime.timedelta(
+                days=365
+            )  # A safe default to get a reasonable amount of history
 
         # Search end date is based on future_scan_days to limit future scans
         if self.future_scan_days is not None and self.future_scan_days > 0:
@@ -178,20 +213,36 @@ class EventTransformer:
                 dest_keys.add(current_uid)
 
                 should_delete = False
-                
+
                 # Check for old events if past_keep_days is set
                 if self.past_keep_days is not None:
                     if self.past_keep_days == 0:
                         # Delete all past events
                         if dtend:
-                            dtend_aware = dtend.astimezone(datetime.timezone.utc) if isinstance(dtend, datetime.datetime) else datetime.datetime.combine(dtend, datetime.time.min, tzinfo=datetime.timezone.utc)
+                            dtend_aware = (
+                                dtend.astimezone(datetime.timezone.utc)
+                                if isinstance(dtend, datetime.datetime)
+                                else datetime.datetime.combine(
+                                    dtend,
+                                    datetime.time.min,
+                                    tzinfo=datetime.timezone.utc,
+                                )
+                            )
                             if dtend_aware < now:
                                 should_delete = True
                                 logging.info(f"Deleting past event: {summary}")
                     elif self.past_keep_days > 0:
                         # Delete events older than past_keep_days
-                        dtstart_aware = dtstart.astimezone(datetime.timezone.utc) if isinstance(dtstart, datetime.datetime) else datetime.datetime.combine(dtstart, datetime.time.min, tzinfo=datetime.timezone.utc)
-                        history_limit = now - datetime.timedelta(days=self.past_keep_days)
+                        dtstart_aware = (
+                            dtstart.astimezone(datetime.timezone.utc)
+                            if isinstance(dtstart, datetime.datetime)
+                            else datetime.datetime.combine(
+                                dtstart, datetime.time.min, tzinfo=datetime.timezone.utc
+                            )
+                        )
+                        history_limit = now - datetime.timedelta(
+                            days=self.past_keep_days
+                        )
                         if dtstart_aware < history_limit:
                             should_delete = True
                             logging.info(f"Deleting old event: {summary}")
@@ -204,7 +255,10 @@ class EventTransformer:
                 continue
 
         # Delete marked events
-        logging.info(f"Deleting {len(events_to_delete)} old events from '{self.dest_calendar}'.")
+        if events_to_delete:
+            logging.info(
+                f"Deleting {len(events_to_delete)} old events from '{self.dest_calendar}'."
+            )
         for e in events_to_delete:
             e.delete()
 
@@ -221,19 +275,19 @@ class EventTransformer:
                     print(f"Warning: Source calendar '{cal_name}' not found.")
                     source_events_by_cal[cal_name] = []
                     continue
-                
+
                 # Use the new search dates to query events
                 events = cal.search(
                     start=search_start_date,
                     end=search_end_date,
                     event=True,
-                    expand=True
+                    expand=True,
                 )
 
                 event_list = []
                 for e in events:
                     vevent = None
-                    if hasattr(e, 'vobject_instance') and e.vobject_instance:
+                    if hasattr(e, "vobject_instance") and e.vobject_instance:
                         vevent = e.vobject_instance.vevent
                     else:
                         try:
@@ -242,11 +296,13 @@ class EventTransformer:
                         except Exception as ex:
                             print(f"Failed to parse event data: {ex}")
                             continue
-                    
+
                     # Extract event data
                     dtstart = vevent.dtstart.value
                     dtend = getattr(vevent, "dtend", None) and vevent.dtend.value
-                    duration = getattr(vevent, "duration", None) and vevent.duration.value
+                    duration = (
+                        getattr(vevent, "duration", None) and vevent.duration.value
+                    )
                     if duration and not dtend:
                         if isinstance(dtstart, datetime.datetime):
                             dtend = dtstart + duration
@@ -260,7 +316,8 @@ class EventTransformer:
                         "summary": vevent.summary.value,
                         "dtstart": dtstart,
                         "dtend": dtend,
-                        "location": getattr(vevent, "location", None) and vevent.location.value,
+                        "location": getattr(vevent, "location", None)
+                        and vevent.location.value,
                         "rsvp": (
                             getattr(vevent, "partstat", None) and vevent.partstat.value
                             if hasattr(vevent, "partstat")
@@ -270,29 +327,44 @@ class EventTransformer:
 
                     # Handle naive datetimes and convert to UTC
                     local_tz = datetime.datetime.now().astimezone().tzinfo
-                    if isinstance(event['dtstart'], datetime.datetime) and event['dtstart'].tzinfo is None:
-                        event['dtstart'] = event['dtstart'].replace(tzinfo=local_tz)
-                        if event['dtend'] and isinstance(event['dtend'], datetime.datetime) and event['dtend'].tzinfo is None:
-                            event['dtend'] = event['dtend'].replace(tzinfo=local_tz)
+                    if (
+                        isinstance(event["dtstart"], datetime.datetime)
+                        and event["dtstart"].tzinfo is None
+                    ):
+                        event["dtstart"] = event["dtstart"].replace(tzinfo=local_tz)
+                        if (
+                            event["dtend"]
+                            and isinstance(event["dtend"], datetime.datetime)
+                            and event["dtend"].tzinfo is None
+                        ):
+                            event["dtend"] = event["dtend"].replace(tzinfo=local_tz)
 
-                    if isinstance(event['dtstart'], datetime.datetime):
-                        event['dtstart'] = event['dtstart'].astimezone(datetime.timezone.utc)
-                        if event['dtend'] and isinstance(event['dtend'], datetime.datetime):
-                            event['dtend'] = event['dtend'].astimezone(datetime.timezone.utc)
-                    
+                    if isinstance(event["dtstart"], datetime.datetime):
+                        event["dtstart"] = event["dtstart"].astimezone(
+                            datetime.timezone.utc
+                        )
+                        if event["dtend"] and isinstance(
+                            event["dtend"], datetime.datetime
+                        ):
+                            event["dtend"] = event["dtend"].astimezone(
+                                datetime.timezone.utc
+                            )
+
                     event_list.append(event)
                 source_events_by_cal[cal_name] = event_list
             # Only process events from this filter's calendar
-            filtered = [e for e in source_events_by_cal[cal_name] if self.match_event(e, filter_obj)]
+            filtered = [
+                e
+                for e in source_events_by_cal[cal_name]
+                if self.match_event(e, filter_obj)
+            ]
             for e in filtered:
                 if self.should_delete_event(e):
                     continue
                 e_copy = e.copy()
-                e_copy['original_uid'] = e.get('uid')
+                e_copy["original_uid"] = e.get("uid")
                 transformed.append(
-                    self.transform_event(
-                        e_copy, filter_obj.get("transformations", {})
-                    )
+                    self.transform_event(e_copy, filter_obj.get("transformations", {}))
                 )
 
         # Get all transformed source events' UIDs for comparison
@@ -303,12 +375,12 @@ class EventTransformer:
         for e in dest_events:
             if e in events_to_delete:  # Skip if already marked for deletion
                 continue
-                
+
             vevent = e.vobject_instance.vevent
             summary = vevent.summary.value
             original_uid = getattr(vevent, "x_original_uid", None)
             current_uid = original_uid.value if original_uid else vevent.uid.value
-            
+
             # Delete if any of these conditions are met:
             # - Event was previously imported (has original_uid) but source no longer has it
             # - Event is marked with ❌
@@ -323,28 +395,32 @@ class EventTransformer:
                 # Check if there's a matching source event that should be deleted
                 src_event = next(
                     (ev for ev in transformed if self.event_uid(ev) == current_uid),
-                    None
+                    None,
                 )
                 if src_event and self.should_delete_event(src_event):
                     remaining_events_to_delete.append(e)
                     logging.info(f"Deleting declined event from source: {summary}")
 
         # Delete remaining marked events
-        logging.info(f"Deleting {len(remaining_events_to_delete)} additional events from '{self.dest_calendar}'.")
+        if remaining_events_to_delete:
+            logging.info(
+                f"Deleting {len(remaining_events_to_delete)} additional events from '{self.dest_calendar}'."
+            )
         for e in remaining_events_to_delete:
             e.delete()
 
         # Print count of events we're about to add
-        logging.info(f"Found {len(transformed)} eligible events, will add to '{self.dest_calendar}'.")
+        logging.info(f"Found {len(transformed)} eligible events.")
         # Save transformed events
         for e in transformed:
             key = self.event_uid(e)
             if key in dest_keys:
                 continue  # Skip duplicate
-            logging.info(f"Adding event: {e['summary']} on {e['dtstart']} to {self.dest_calendar}")
+            logging.info(
+                f"Adding event: {e['summary']} on {e['dtstart']} to {self.dest_calendar}"
+            )
             ical = self.event_to_ical(e)
             dest_cal.save_event(ical, no_overwrite=True)
-
 
     def event_to_ical(self, event):
         dtstart = event["dtstart"]
@@ -359,12 +435,18 @@ class EventTransformer:
         ]
 
         # All-day event detection
-        is_all_day = isinstance(dtstart, datetime.date) and not isinstance(dtstart, datetime.datetime)
+        is_all_day = isinstance(dtstart, datetime.date) and not isinstance(
+            dtstart, datetime.datetime
+        )
 
         if is_all_day:
-            dtstart_date = dtstart.date() if isinstance(dtstart, datetime.datetime) else dtstart
+            dtstart_date = (
+                dtstart.date() if isinstance(dtstart, datetime.datetime) else dtstart
+            )
             if dtend:
-                dtend_date = dtend.date() if isinstance(dtend, datetime.datetime) else dtend
+                dtend_date = (
+                    dtend.date() if isinstance(dtend, datetime.datetime) else dtend
+                )
             else:
                 dtend_date = dtstart_date + datetime.timedelta(days=1)
             ical_parts.append(f"DTSTART;VALUE=DATE:{dtstart_date.strftime('%Y%m%d')}\n")
@@ -379,13 +461,13 @@ class EventTransformer:
                 else:
                     dtend = dtstart + datetime.timedelta(hours=1)
             # Use the UTC times for iCalendar output
-            dtstart_str = dtstart.strftime('%Y%m%dT%H%M%S') + 'Z'
-            dtend_str = dtend.strftime('%Y%m%dT%H%M%S') + 'Z'
+            dtstart_str = dtstart.strftime("%Y%m%dT%H%M%S") + "Z"
+            dtend_str = dtend.strftime("%Y%m%dT%H%M%S") + "Z"
             ical_parts.append(f"DTSTART:{dtstart_str}\n")
             ical_parts.append(f"DTEND:{dtend_str}\n")
 
         if event.get("location"):
-            sanitized_location = self.sanitize_text(event['location'])
+            sanitized_location = self.sanitize_text(event["location"])
             ical_parts.append(f"LOCATION:{sanitized_location}\n")
         if event.get("original_uid"):
             ical_parts.append(f"X-ORIGINAL-UID:{event['original_uid']}\n")
