@@ -149,6 +149,7 @@ User=calendar
 Group=calendar
 WorkingDirectory=/opt/CalendarTransformer
 ExecStart=/opt/CalendarTransformer/venv/bin/python /opt/CalendarTransformer/calendar_transformer.py
+TimeoutStartSec=180
 ```
 
 3. Timer unit file
